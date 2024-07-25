@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 // ****************** Разработчик: Субботин Сергей (c)2024 ****************** //
 // **************************** АО "Ангстрем" ******************************* //
-// *************************** Версия 3.0.0.0 ******************************* //
+// *************************** Версия 2.1.0.0 ******************************* //
 ////////////////////////////////////////////////////////////////////////////////
 
 unit LPTDrv;
@@ -12,12 +12,70 @@ uses
   Windows, WinSvc, SysUtils, Dialogs, Classes, Registry;
 
 const
+// The IOCTL function codes from 0x800 to 0xFFF are for customer use.
+{
+#define IOCTL_OLS_GET_DRIVER_VERSION \
+	CTL_CODE(OLS_TYPE, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_OLS_GET_REFCOUNT \
+	CTL_CODE(OLS_TYPE, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_OLS_READ_MSR \
+	CTL_CODE(OLS_TYPE, 0x821, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_OLS_WRITE_MSR \
+	CTL_CODE(OLS_TYPE, 0x822, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_OLS_READ_PMC \
+	CTL_CODE(OLS_TYPE, 0x823, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_OLS_HALT \
+	CTL_CODE(OLS_TYPE, 0x824, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_OLS_READ_IO_PORT \
+	CTL_CODE(OLS_TYPE, 0x831, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+#define IOCTL_OLS_WRITE_IO_PORT \
+	CTL_CODE(OLS_TYPE, 0x832, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+#define IOCTL_OLS_READ_IO_PORT_BYTE \
+	CTL_CODE(OLS_TYPE, 0x833, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+#define IOCTL_OLS_READ_IO_PORT_WORD \
+	CTL_CODE(OLS_TYPE, 0x834, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+#define IOCTL_OLS_READ_IO_PORT_DWORD \
+	CTL_CODE(OLS_TYPE, 0x835, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+#define IOCTL_OLS_WRITE_IO_PORT_BYTE \
+	CTL_CODE(OLS_TYPE, 0x836, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+#define IOCTL_OLS_WRITE_IO_PORT_WORD \
+	CTL_CODE(OLS_TYPE, 0x837, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+#define IOCTL_OLS_WRITE_IO_PORT_DWORD \
+	CTL_CODE(OLS_TYPE, 0x838, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+#define IOCTL_OLS_READ_MEMORY \
+	CTL_CODE(OLS_TYPE, 0x841, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+#define IOCTL_OLS_WRITE_MEMORY \
+	CTL_CODE(OLS_TYPE, 0x842, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+#define IOCTL_OLS_READ_PCI_CONFIG \
+	CTL_CODE(OLS_TYPE, 0x851, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+#define IOCTL_OLS_WRITE_PCI_CONFIG \
+	CTL_CODE(OLS_TYPE, 0x852, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+}
+
   PROCESSOR_ARCHITECTURE_AMD64 = 9;	 // x64 (AMD or Intel)
   PROCESSOR_ARCHITECTURE_ARM   = 5;	 // ARM
   PROCESSOR_ARCHITECTURE_ARM64 = 12; //	ARM64
   PROCESSOR_ARCHITECTURE_IA64  = 6;  // Intel Itanium-based
   PROCESSOR_ARCHITECTURE_INTEL = 0;  //	x86
   PROCESSOR_ARCHITECTURE_UNKNOWN = $FFFF; // Unknown architecture.
+
 
   OLS_TYPE = 40000;
   METHOD_BUFFERED   = $0000;
@@ -112,6 +170,7 @@ type
     BaseAddr2: WORD;
     PCIBARReg: TPCIReg;
   end;
+  TLPTInfoMass = array of TLPTInfo;
 
   OLS_WRITE_IO_PORT_INPUT = record
     PortNumber: DWORD;
@@ -123,11 +182,13 @@ type
 
   TLPTDriver = class
   public
-    NumPort: byte; // Номер активного порта
+    EPPMode: Boolean;
+    NumPort: byte;
 
     WinName : string;
     Win64bit: Boolean;
-    Port: array of TLPTInfo;
+    Port: TLPTInfoMass;
+    ActLPTPortNames: array of string;
 
     constructor Create();
     destructor  Destroy(); override;
@@ -149,6 +210,14 @@ type
     procedure WriteByte (const Addr: WORD; const Data: byte);
     procedure WriteWORD (const Addr: WORD; const Data: WORD);
     procedure WriteDWORD(const Addr: WORD; const Data: DWORD);
+
+    function ReadCH382LIoPortByte (const Addr: WORD): byte;
+    function ReadCH382LIoPortWORD (const Addr: WORD): WORD;
+    function ReadCH382LIoPortDWORD(const Addr: WORD): DWORD;
+
+    procedure WriteCH382LIoPortByte (const Addr: WORD; const Data: byte);
+    procedure WriteCH382LIoPortWORD (const Addr: WORD; const Data: WORD);
+    procedure WriteCH382LIoPortDWORD(const Addr: WORD; const Data: DWORD);
   private
     DrvPath : TFileName;
     DrvfName: TFileName;
@@ -162,8 +231,6 @@ type
     IOCTL_OLS_WRITE_IO_PORT_BYTE : DWORD;
     IOCTL_OLS_WRITE_IO_PORT_WORD : DWORD;
     IOCTL_OLS_WRITE_IO_PORT_DWORD: DWORD;
-
-    ActLPTPortNames: array of string;
 
     function Find_PCIe_LPT(): byte;
     function GetActLPTPortNames(): byte;
@@ -263,6 +330,7 @@ begin                                                                           
                                                                                                  //
   FillPCIReg();                                                                                  //
                                                                                                  //
+  EPPMode := False;                                                                              //
   NumPort := 0;                                                                                  //
                                                                                                  //
   Init();                                                                                        //
@@ -283,16 +351,19 @@ begin                                                                           
 end;                                                                                             //
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-////////////////////////////////////////
-procedure TLPTDriver.Init();          //
-begin                                 //
-  with Port[NumPort] do               //
-  begin                               //
-    WriteByte(BaseAddr+2, $04);       //
-    WriteIoPortByte(BaseAddr+3, $00); //
-  end;                                //
-end;                                  //
-////////////////////////////////////////
+//////////////////////////////////////////////
+procedure TLPTDriver.Init();                //
+begin                                       //
+  with Port[NumPort] do
+  begin
+    WriteByte(BaseAddr+2, $04); //
+
+//    WriteIoPortByte(BaseAddr+0, $00); // PDR
+//    WriteIoPortByte(BaseAddr+2, $C0); // PCR
+//    WriteIoPortByte(BaseAddr+3, $00); // PXR
+  end;
+end;                                        //
+//////////////////////////////////////////////
 
 /////////////////////////////////////////////////////
 function TLPTDriver.GetActLPTPortNames(): byte;    //
@@ -980,11 +1051,9 @@ function TLPTDriver.ReadByte(const Addr: WORD): byte;                 //
 begin                                                                 //
   with Port[NumPort] do                                               //
   begin                                                               //
-    WriteIoPortByte(BaseAddr+2, $24); // Режим чтения                 //
-                                                                      //
-    if (Addr = BaseAddr+0) or   // DR                                 //
-       (Addr = BaseAddr+1) or   // SR                                 //
-       (Addr = BaseAddr+2) then // CR                                 //
+    if (Addr = BaseAddr+0) or   // PIR/PDR                            //
+       (Addr = BaseAddr+1) or   // PSR                                //
+       (Addr = BaseAddr+2) then // PCR                                //
     begin                                                             //
       Result := ReadIoPortByte(Addr);                                 //
                                                                       //
@@ -992,18 +1061,36 @@ begin                                                                 //
     end;                                                              //
                                                                       //
     if Addr = BaseAddr+3 then // EPP Addr read byte                   //
-    begin                                                             //
-      Result := ReadIoPortByte(Addr);                                 //
+      if EPPMode then                                                 //
+      begin                                                           //
+        Result := ReadIoPortByte(Addr);                               //
                                                                       //
-      Exit;                                                           //
-    end;                                                              //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $2C);                             //
+        Result := ReadIoPortByte(BaseAddr+0);                         //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
                                                                       //
     if Addr = BaseAddr+4 then // EPP Data read byte                   //
-    begin                                                             //
-      Result := ReadIoPortByte(Addr);                                 //
+      if EPPMode then                                                 //
+      begin                                                           //
+        Result := ReadIoPortByte(Addr);                               //
                                                                       //
-      Exit;                                                           //
-    end                                                               //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $26);                             //
+        Result := ReadIoPortByte(BaseAddr+0);                         //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
   end;                                                                //
                                                                       //
   ErrMess('Неправильный адрес!');                                     //
@@ -1013,18 +1100,25 @@ end;                                                                  //
 function TLPTDriver.ReadWORD(const Addr: WORD): WORD;                 //
 begin                                                                 //
   with Port[NumPort] do                                               //
-  begin                                                               //
-    WriteIoPortByte(BaseAddr+2, $24); // Режим чтения                 //
+    if Addr = BaseAddr+5 then // EPP Data read WORD                   //
+      if EPPMode then                                                 //
+      begin                                                           //
+        Result := ReadIoPortWORD(Addr);                               //
                                                                       //
-    if (Addr = BaseAddr+4) or   //                                    //
-       (Addr = BaseAddr+5) then // EPP Data read WORD                 //
-    begin                                                             //
-      Result := ReadIoPortByte(BaseAddr+4);                           //
-      Result := (Result shl 8)+ReadIoPortByte(BaseAddr+4);            //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $26);                             //
+        Result := ReadIoPortByte(BaseAddr+0);                         //
+        WriteIoPortByte(BaseAddr+2, $24);                             //
                                                                       //
-      Exit;                                                           //
-    end;                                                              //
-  end;                                                                //
+        WriteIoPortByte(BaseAddr+2, $26);                             //
+        Result := (Result shl 8)+ReadIoPortByte(BaseAddr+0);          //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
                                                                       //
   ErrMess('Неправильный адрес!');                                     //
 end;                                                                  //
@@ -1033,20 +1127,33 @@ end;                                                                  //
 function TLPTDriver.ReadDWORD(const Addr: WORD): DWORD;               //
 begin                                                                 //
   with Port[NumPort] do                                               //
-  begin                                                               //
-    WriteIoPortByte(BaseAddr+2, $24); // Режим чтения                 //
+    if Addr = BaseAddr+7 then // EPP Data read WORD                   //
+      if EPPMode then                                                 //
+      begin                                                           //
+        Result := ReadIoPortDWORD(Addr);                              //
                                                                       //
-    if (Addr = BaseAddr+4) or   //                                    //
-       (Addr = BaseAddr+7) then // EPP Data read DWORD                //
-    begin                                                             //
-      Result := ReadIoPortDWORD(BaseAddr+4);                          //
-      Result := (Result shl 8)+ReadIoPortByte(BaseAddr+4);            //
-      Result := (Result shl 8)+ReadIoPortByte(BaseAddr+4);            //
-      Result := (Result shl 8)+ReadIoPortByte(BaseAddr+4);            //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $26);                             //
+        Result := ReadIoPortByte(BaseAddr+0);                         //
+        WriteIoPortByte(BaseAddr+2, $24);                             //
                                                                       //
-      Exit;                                                           //
-    end;                                                              //
-  end;                                                                //
+        WriteIoPortByte(BaseAddr+2, $26);                             //
+        Result := (Result shl 8)+ReadIoPortByte(BaseAddr+0);          //
+        WriteIoPortByte(BaseAddr+2, $24);                             //
+                                                                      //
+        WriteIoPortByte(BaseAddr+2, $26);                             //
+        Result := (Result shl 8)+ReadIoPortByte(BaseAddr+0);          //
+        WriteIoPortByte(BaseAddr+2, $24);                             //
+                                                                      //
+        WriteIoPortByte(BaseAddr+2, $26);                             //
+        Result := (Result shl 8)+ReadIoPortByte(BaseAddr+0);          //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
                                                                       //
   ErrMess('Неправильный адрес!');                                     //
 end;                                                                  //
@@ -1056,29 +1163,44 @@ procedure TLPTDriver.WriteByte(const Addr: WORD; const Data: byte);   //
 begin                                                                 //
   with Port[NumPort] do                                               //
   begin                                                               //
-    WriteIoPortByte(BaseAddr+2, $04); // Режим записи                 //
-                                                                      //
-    if (Addr = BaseAddr+0) or   // DR                                 //
-       (Addr = BaseAddr+2) then // CR                                 //
+    if (Addr = BaseAddr+0) or   // PIR/PDR                            //
+       (Addr = BaseAddr+2) then // PCR                                //
     begin                                                             //
       WriteIoPortByte(Addr, Data);                                    //
-                                                                      //
       Exit;                                                           //
     end;                                                              //
                                                                       //
     if Addr = BaseAddr+3 then // EPP Addr write byte                  //
-    begin                                                             //
-      WriteIoPortByte(Addr, Data);                                    //
+      if EPPMode then                                                 //
+      begin                                                           //
+        WriteIoPortByte(Addr, Data);                                  //
                                                                       //
-      Exit;                                                           //
-    end;                                                              //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $0D);                             //
+        WriteIoPortByte(BaseAddr+0, Data);                            //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
                                                                       //
     if Addr = BaseAddr+4 then // EPP Data write byte                  //
-    begin                                                             //
-      WriteIoPortByte(Addr, Data);                                    //
+      if EPPMode then                                                 //
+      begin                                                           //
+        WriteIoPortByte(Addr, Data);                                  //
                                                                       //
-      Exit;                                                           //
-    end;                                                              //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $07);                             //
+        WriteIoPortByte(BaseAddr+0, Data);                            //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
   end;                                                                //
                                                                       //
   ErrMess('Неправильный адрес!');                                     //
@@ -1088,18 +1210,26 @@ end;                                                                  //
 procedure TLPTDriver.WriteWORD(const Addr: WORD; const Data: WORD);   //
 begin                                                                 //
   with Port[NumPort] do                                               //
-  begin                                                               //
-    WriteIoPortByte(BaseAddr+2, $04); // Режим записи                 //
-                                                                      //
-    if (Addr = BaseAddr+4) or   //                                    //
+    if (Addr = BaseAddr+4) or   // EPP Data write byte ????           //
        (Addr = BaseAddr+5) then // EPP Data write WORD                //
-    begin                                                             //
-      WriteIoPortByte(BaseAddr+4, byte(Data shr 8));                  //
-      WriteIoPortByte(BaseAddr+4, byte(Data));                        //
+      if EPPMode then                                                 //
+      begin                                                           //
+        WriteIoPortWORD(Addr, Data);                                  //
                                                                       //
-      Exit;                                                           //
-    end;                                                              //
-  end;                                                                //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $07);                             //
+        WriteIoPortByte(BaseAddr+0, byte(Data shr 8));                //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        WriteIoPortByte(BaseAddr+2, $07);                             //
+        WriteIoPortByte(BaseAddr+0, byte(Data));                      //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
                                                                       //
   ErrMess('Неправильный адрес!');                                     //
 end;                                                                  //
@@ -1108,24 +1238,204 @@ end;                                                                  //
 procedure TLPTDriver.WriteDWORD(const Addr: WORD; const Data: DWORD); //
 begin                                                                 //
   with Port[NumPort] do                                               //
-  begin                                                               //
-    WriteIoPortByte(BaseAddr+2, $04); // Режим записи                 //
-                                                                      //
-    if (Addr = BaseAddr+4) or   //                                    //
+    if (Addr = BaseAddr+4) or   // EPP Data write byte ????           //
        (Addr = BaseAddr+7) then // EPP Data write DWORD               //
-    begin                                                             //
-      WriteIoPortByte(BaseAddr+4, byte(Data shr 24));                 //
-      WriteIoPortByte(BaseAddr+4, byte(Data shr 16));                 //
-      WriteIoPortByte(BaseAddr+4, byte(Data shr  8));                 //
-      WriteIoPortByte(BaseAddr+4, byte(Data));                        //
+      if EPPMode then                                                 //
+      begin                                                           //
+        WriteIoPortDWORD(Addr, Data);                                 //
                                                                       //
-      Exit;                                                           //
-    end;                                                              //
-  end;                                                                //
+        Exit;                                                         //
+      end                                                             //
+      else                                                            //
+      begin                                                           //
+        WriteIoPortByte(BaseAddr+2, $07);                             //
+        WriteIoPortByte(BaseAddr+0, byte(Data shr 24));               //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        WriteIoPortByte(BaseAddr+2, $07);                             //
+        WriteIoPortByte(BaseAddr+0, byte(Data shr 16));               //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        WriteIoPortByte(BaseAddr+2, $07);                             //
+        WriteIoPortByte(BaseAddr+0, byte(Data shr 8));                //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        WriteIoPortByte(BaseAddr+2, $07);                             //
+        WriteIoPortByte(BaseAddr+0, byte(Data));                      //
+        WriteIoPortByte(BaseAddr+2, $04);                             //
+                                                                      //
+        Exit;                                                         //
+      end;                                                            //
                                                                       //
   ErrMess('Неправильный адрес!');                                     //
 end;                                                                  //
 ////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////////
+function TLPTDriver.ReadCH382LIoPortByte(const Addr: WORD): byte;                 //
+begin                                                                             //
+  with Port[NumPort] do                                                           //
+  begin                                                                           //
+    if Addr = BaseAddr+0 then // PIR/PDR                                          //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $00); // PXR (Режим SPP)                        //
+      WriteIoPortByte(BaseAddr+2, $C4); // PCR (Режим чтения)                     //
+      Result := ReadIoPortByte(BaseAddr+0);                                       //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+    if Addr = BaseAddr+1 then // PSR                                              //
+    begin                                                                         //
+      Result := ReadIoPortByte(BaseAddr+1);                                       //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+    if Addr = BaseAddr+2 then // PCR                                              //
+    begin                                                                         //
+      Result := ReadIoPortByte(BaseAddr+2);                                       //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+    if Addr = BaseAddr+3 then // EPP Addr_read                                    //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $0C); // PXR (Режим EPP+Addr)                   //
+      WriteIoPortByte(BaseAddr+2, $C4); // PCR (Режим чтения)                     //
+      Result := ReadIoPortByte(BaseAddr+0);                                       //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+    if Addr = BaseAddr+4 then // EPP Data_read                                    //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $04); // PXR (Режим EPP+Addr)                   //
+      WriteIoPortByte(BaseAddr+2, $C4); // PCR (Режим чтения)                     //
+      Result := ReadIoPortByte(BaseAddr+0);                                       //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+  end;                                                                            //
+                                                                                  //
+  ErrMess('Неправильный адрес!');                                                 //
+end;                                                                              //
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+function TLPTDriver.ReadCH382LIoPortWord(const Addr: WORD): WORD;                 //
+begin                                                                             //
+  with Port[NumPort] do                                                           //
+    if Addr = BaseAddr+5 then // EPP Data_read                                    //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $04); // PXR (Режим EPP+Data)                   //
+      WriteIoPortByte(BaseAddr+2, $C4); // PCR (Режим чтения)                     //
+      Result := ReadIoPortByte(BaseAddr+0);                                       //
+      Result := (Result shl 8)+ReadIoPortByte(BaseAddr+0);                        //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+  ErrMess('Неправильный адрес!');                                                 //
+end;                                                                              //
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+function TLPTDriver.ReadCH382LIoPortDWORD(const Addr: WORD): DWORD;               //
+begin                                                                             //
+  with Port[NumPort] do                                                           //
+    if Addr = BaseAddr+7 then // EPP Data_read                                    //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $04); // PXR (Режим EPP+Addr)                   //
+      WriteIoPortByte(BaseAddr+2, $C0); // PCR (Режим чтения)                     //
+      Result := ReadIoPortByte(BaseAddr+0);                                       //
+      Result := Result+(ReadIoPortByte(BaseAddr+0) shl  8);                       //
+      Result := Result+(ReadIoPortByte(BaseAddr+0) shl 16);                       //
+      Result := Result+(ReadIoPortByte(BaseAddr+0) shl 24);                       //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+  ErrMess('Неправильный адрес!');                                                 //
+end;                                                                              //
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+procedure TLPTDriver.WriteCH382LIoPortByte(const Addr: WORD; const Data: byte);   //
+begin                                                                             //
+  with Port[NumPort] do                                                           //
+  begin                                                                           //
+    if Addr = BaseAddr+0 then // PIR/PDR                                          //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $00); // PXR (Режим SPP)                        //
+      WriteIoPortByte(BaseAddr+2, $E4); // PCR (Режим записи)                     //
+      WriteIoPortByte(BaseAddr+0, Data);                                          //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+    if Addr = BaseAddr+2 then // PCR                                              //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+2, Data);                                          //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+    if Addr = BaseAddr+3 then // EPP Addr_write                                   //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $0C); // PXR (Режим EPP+Addr)                   //
+      WriteIoPortByte(BaseAddr+2, $E4); // PCR (Режим записи)                     //
+      WriteIoPortByte(BaseAddr+0, Data);                                          //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+    if Addr = BaseAddr+4 then // EPP Data_write                                   //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $04); // PXR (Режим EPP+Data)                   //
+      WriteIoPortByte(BaseAddr+2, $E4); // PCR (Режим записи)                     //
+      WriteIoPortByte(BaseAddr+0, Data);                                          //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+  end;                                                                            //
+                                                                                  //
+  ErrMess('Неправильный адрес!');                                                 //
+end;                                                                              //
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+procedure TLPTDriver.WriteCH382LIoPortWORD(const Addr: WORD; const Data: WORD);   //
+begin                                                                             //
+  with Port[NumPort] do                                                           //
+    if Addr = BaseAddr+5 then // EPP Data_write                                   //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $04); // PXR (Режим EPP+Addr)                   //
+      WriteIoPortByte(BaseAddr+2, $E4); // PCR (Режим записи)                     //
+      WriteIoPortByte(BaseAddr+0, byte(Data shr 8));                              //
+      WriteIoPortByte(BaseAddr+0, byte(Data));                                    //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+  ErrMess('Неправильный адрес!');                                                 //
+end;                                                                              //
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+procedure TLPTDriver.WriteCH382LIoPortDWORD(const Addr: WORD; const Data: DWORD); //
+begin                                                                             //
+  with Port[NumPort] do                                                           //
+    if Addr = BaseAddr+7 then // EPP Data_write                                   //
+    begin                                                                         //
+      WriteIoPortByte(BaseAddr+3, $04); // PXR (Режим EPP+Addr)                   //
+      WriteIoPortByte(BaseAddr+2, $E0); // PCR (Режим записи)                     //
+      WriteIoPortByte(BaseAddr+0, byte(Data));                                    //
+      WriteIoPortByte(BaseAddr+0, byte(Data shr  8));                             //
+      WriteIoPortByte(BaseAddr+0, byte(Data shr 16));                             //
+      WriteIoPortByte(BaseAddr+0, byte(Data shr 24));                             //
+                                                                                  //
+      Exit;                                                                       //
+    end;                                                                          //
+                                                                                  //
+  ErrMess('Неправильный адрес!');                                                 //
+end;                                                                              //
+////////////////////////////////////////////////////////////////////////////////////
 
 
 ///////////////////////////////////////////////////////////////////////////////////////

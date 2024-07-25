@@ -1,10 +1,10 @@
 ////////////////////////////////////////////////////////////////////////////////
 // ****************** Разработчик: Субботин Сергей (c)2024 ****************** //
 // **************************** АО "Ангстрем" ******************************* //
-// *************************** Версия 3.0.0.0 ******************************* //
+// *********************** Версия 1.0.0.0 (Inp32) *************************** //
 ////////////////////////////////////////////////////////////////////////////////
 
-unit LPTDrv;
+unit LPTDrv_inp;
 
 interface
 
@@ -12,6 +12,13 @@ uses
   Windows, WinSvc, SysUtils, Dialogs, Classes, Registry;
 
 const
+//  {$IFDEF WIN32}
+    LIB_INPOUT = 'inpout32.dll';
+//  {$ENDIF}
+//  {$IFDEF WIN64}
+//    LIB_INPOUT = 'inpoutx64.dll';
+//  {$ENDIF}
+
   PROCESSOR_ARCHITECTURE_AMD64 = 9;	 // x64 (AMD or Intel)
   PROCESSOR_ARCHITECTURE_ARM   = 5;	 // ARM
   PROCESSOR_ARCHITECTURE_ARM64 = 12; //	ARM64
@@ -187,8 +194,15 @@ type
     procedure ErrMess(const ErrMes: string);
   end;
 
+  procedure Out32(PortAddress: SHORT; Data: SHORT);	stdcall; external LIB_INPOUT;
+  function  Inp32(PortAddress: SHORT): SHORT;      	stdcall; external LIB_INPOUT;
+
+  function IsInpOutDriverOpen(): BOOL; stdcall; external LIB_INPOUT;  // Returns TRUE if the InpOut driver was opened successfully
+
 
 implementation
+
+uses LPTDrv;
 
 { TDriver }
 
@@ -218,7 +232,14 @@ begin                                                                           
     ErrMess('Не найдены PCIe LPT порты!');                                                       //
     Exit;                                                                                        //
   end;                                                                                           //
+
+  if not IsInpOutDriverOpen then
+  begin
+    ErrMess('Ошибка открытия драйвера LPT!');
+    Exit;
+  end;
                                                                                                  //
+{
   DrvID := 'WinRing0_1_2_0';                                                                     //
   if Win64bit then DrvfName := 'WinRing0x64.sys'                                                 //
               else DrvfName := 'WinRing0.sys';                                                   //
@@ -256,21 +277,22 @@ begin                                                                           
     ErrMess('Ошибка открытия драйвера LPT!');                                                    //
     Exit;                                                                                        //
   end;                                                                                           //
-                                                                                                 //
+}                                                                                                 //
   for n := 0 to Length(Port)-1 do                                                                //
     if Port[n].BaseAddr1 = 0 then Port[n].BaseAddr := Port[n].BaseAddr2                          //
                              else Port[n].BaseAddr := Port[n].BaseAddr1;                         //
                                                                                                  //
-  FillPCIReg();                                                                                  //
+//  FillPCIReg();                                                                                  //
                                                                                                  //
   NumPort := 0;                                                                                  //
                                                                                                  //
   Init();                                                                                        //
 end;                                                                                             //
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////                                                                                                 
+///////////////////////////////////////////////////////////////////////////////////////////////////
 destructor TLPTDriver.Destroy;                                                                   //
 begin                                                                                            //
+{
   if gHandle <> INVALID_HANDLE_VALUE then                                                        //
   begin                                                                                          //
     CloseHandle(gHandle);                                                                        //
@@ -278,6 +300,7 @@ begin                                                                           
   end;                                                                                           //
                                                                                                  //
   ManageDriver(PChar(DrvID), PChar(DrvPath), OLS_DRIVER_REMOVE);                                 //
+}
                                                                                                  //
   inherited;                                                                                     //
 end;                                                                                             //
@@ -836,6 +859,9 @@ var                                                                             
   returnedLength: DWORD;                                                         //
 begin                                                                            //
   Result := 0;                                                                   //
+
+  Result := byte(Inp32(Addr));
+{
                                                                                  //
 	if (gHandle = 0) or                                                            //
      (gHandle = INVALID_HANDLE_VALUE) then Exit;                                 //
@@ -848,6 +874,7 @@ begin                                                                           
                          sizeof(Result),                                         //
                          returnedLength,                                         //
                          nil) then ErrMess('Ошибка: '+IntToStr(GetLastError())); //
+}
 end;                                                                             //
 ///////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////
@@ -900,6 +927,9 @@ var                                                                             
   length: DWORD;                                                                 //
   inBuf: OLS_WRITE_IO_PORT_INPUT;                                                //
 begin                                                                            //
+  Out32(Addr, Data);
+
+{
 	if (gHandle = 0) or                                                            //
      (gHandle = INVALID_HANDLE_VALUE) then Exit;                                 //
                                                                                  //
@@ -918,6 +948,7 @@ begin                                                                           
                          0,                                                      //
                          returnedLength,                                         //
                          nil) then ErrMess('Ошибка: '+IntToStr(GetLastError())); //
+}
 end;                                                                             //
 ///////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////
